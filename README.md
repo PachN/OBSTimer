@@ -8,6 +8,7 @@ Ein Countdown-Script für OBS Studio. Es wird direkt in OBS unter **Werkzeuge �
 
 - **Zwei Modi:** eine feste Dauer (z. B. 10 Minuten) oder eine Zielzeit (z. B. 20:00 Uhr)
 - **Anzeige:** Tage und Stunden lassen sich einzeln ein- und ausblenden, dazu optionale Beschriftungen (Tage/Std/Min/Sek) und ein Textschatten
+- **Position:** neun Positionen (oben/Mitte/unten × links/Mitte/rechts) mit einstellbarem Abstand zum Rand
 - **Text bei Ablauf**, z. B. „Stream startet jetzt!“
 - **Schrift, Größe, Fett/Kursiv und Textfarbe** über die normalen OBS-Dialoge
 - **Hintergrund:** transparent, einfarbig (mit Deckkraft und Eckenradius) oder animiert
@@ -26,7 +27,8 @@ Die Hotkeys legst du unter **Einstellungen → Hotkeys** fest. Sie stehen dort u
 
 ## Hinweise
 
-- Die Größe der Browserquelle stellst du im Script ein (Breite/Höhe, Standard 800 × 200 px). Beim Ändern passt das Script die Quelle an.
+- Die Browserquelle ist standardmäßig 1920 × 1080 px groß, also so groß wie eine Full-HD-Szene. Der Countdown sitzt darin an der gewählten Position. Breite und Höhe kannst du im Script ändern.
+- Für die Fehlersuche kannst du in `obstimer.lua` `DEBUG = true` setzen. Dann schreibt das Script jeden Schritt ins OBS-Log.
 - Bei Start, Pause und Zurücksetzen lädt die Browserquelle kurz neu. Dadurch beginnt auch die Hintergrund-Animation von vorn.
 - Im Modus **Zielzeit** liegt die Uhrzeit immer in der Zukunft. Ist sie heute schon vorbei, zählt der Timer bis zu dieser Uhrzeit am nächsten Tag.
 - `obstimer.html` kannst du zum Ausprobieren auch direkt im Browser öffnen, z. B. mit `obstimer.html?state=run&end=9999999999999&bg=anim&anim=aurora`.

@@ -18,13 +18,24 @@
     overflow: hidden;
     background: transparent;
   }
-  #box {
+  #root {
     position: absolute;
     inset: 0;
     overflow: hidden;
+  }
+  #stage {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    box-sizing: border-box;
+  }
+  #box {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0.35em 0.7em;
   }
   #bg, #fx { position: absolute; inset: 0; }
   #fx { width: 100%; height: 100%; display: block; }
@@ -110,10 +121,14 @@
 </style>
 </head>
 <body>
-<div id="box">
+<div id="root">
   <div id="bg"></div>
   <canvas id="fx" hidden></canvas>
-  <div id="time"></div>
+  <div id="stage">
+    <div id="box">
+      <div id="time"></div>
+    </div>
+  </div>
 </div>
 <script>
 (function () {
@@ -145,6 +160,8 @@
     bg:      str("bg", "none"),             // none | solid | anim
     bgcolor: color("bgcolor", "000000b3"),
     radius:  num("radius", 12),
+    pos:     str("pos", "mc"),              // tl tc tr ml mc mr bl bc br
+    margin:  Math.max(0, num("margin", 40)),
     anim:    str("anim", "gradient"),
     c1:      color("c1", "6a5cffff"),
     c2:      color("c2", "ff4fa3ff"),
@@ -155,7 +172,8 @@
   };
   var LABELS = { d: "Tage", h: "Std", m: "Min", s: "Sek" };
 
-  var box = document.getElementById("box");
+  var root = document.getElementById("root");   // ganze Fläche: Hintergrund
+  var box = document.getElementById("box");     // nur der Timer, positionierbar
   var bgEl = document.getElementById("bg");
   var timeEl = document.getElementById("time");
   var canvas = document.getElementById("fx");
@@ -168,19 +186,28 @@
   timeEl.style.fontStyle = cfg.italic ? "italic" : "normal";
   if (cfg.shadow) timeEl.style.textShadow = "0 2px 4px rgba(0,0,0,.6), 0 0 18px rgba(0,0,0,.35)";
 
+  // ---------- Position ----------
+  var stage = document.getElementById("stage");
+  var POS = { t: "flex-start", m: "center", b: "flex-end", l: "flex-start", c: "center", r: "flex-end" };
+  var pv = /^[tmb][lcr]$/.test(cfg.pos) ? cfg.pos : "mc";
+  stage.style.alignItems = POS[pv[0]];
+  stage.style.justifyContent = POS[pv[1]];
+  stage.style.padding = cfg.margin + "px";
+  box.style.fontSize = cfg.size + "px";   // Innenabstand skaliert mit der Schrift
+
   // ---------- Hintergrund ----------
-  box.style.borderRadius = cfg.radius + "px";
-  box.style.setProperty("--c1", cfg.c1);
-  box.style.setProperty("--c2", cfg.c2);
-  box.style.setProperty("--c3", cfg.c3);
-  box.style.setProperty("--base", cfg.base);
-  box.style.setProperty("--speed", cfg.speed);
+  root.style.borderRadius = cfg.radius + "px";
+  root.style.setProperty("--c1", cfg.c1);
+  root.style.setProperty("--c2", cfg.c2);
+  root.style.setProperty("--c3", cfg.c3);
+  root.style.setProperty("--base", cfg.base);
+  root.style.setProperty("--speed", cfg.speed);
 
   var canvasAnims = {};
   if (cfg.bg === "solid") {
     bgEl.style.background = cfg.bgcolor;
   } else if (cfg.bg === "anim") {
-    box.classList.add("anim-" + cfg.anim);
+    root.classList.add("anim-" + cfg.anim);
     if (cfg.anim === "aurora") {
       var blob = document.createElement("div");
       blob.className = "blob";
@@ -247,7 +274,7 @@
   function pick() { var c = [cfg.c1, cfg.c2, cfg.c3]; return c[Math.floor(Math.random() * 3)]; }
   function resize() {
     dpr = window.devicePixelRatio || 1;
-    W = box.clientWidth; H = box.clientHeight;
+    W = root.clientWidth; H = root.clientHeight;
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (canvasAnims[cfg.anim] && canvasAnims[cfg.anim].init) canvasAnims[cfg.anim].init();
@@ -274,7 +301,7 @@
   canvasAnims.particles = {
     init: function () {
       items = [];
-      var n = Math.max(20, Math.min(90, Math.round(W * H / 4500)));
+      var n = Math.max(20, Math.min(140, Math.round(W * H / 15000)));
       for (var i = 0; i < n; i++) items.push({ x: rand(0, W), y: rand(0, H), vx: rand(-20, 20), vy: rand(-20, 20), r: rand(1.2, 2.8), c: pick() });
     },
     draw: function (t, dt) {
@@ -331,11 +358,11 @@
   canvasAnims.bokeh = {
     init: function () {
       items = [];
-      var n = Math.max(12, Math.min(40, Math.round(W * H / 9000)));
+      var n = Math.max(12, Math.min(45, Math.round(W * H / 40000)));
       for (var i = 0; i < n; i++) items.push(this.dot(true));
     },
     dot: function (anyY) {
-      var r = rand(H * 0.08, H * 0.35);
+      var m = Math.min(W, H), r = rand(m * 0.05, m * 0.18);
       return { x: rand(0, W), y: anyY ? rand(0, H) : H + r, r: r, v: rand(8, 30), a: rand(0.15, 0.45), c: pick(), w: rand(0, Math.PI * 2) };
     },
     draw: function (t, dt) {
@@ -359,7 +386,7 @@
 
   canvasAnims.matrix = {
     init: function () {
-      this.fs = Math.max(10, Math.round(H / 14));
+      this.fs = Math.max(12, Math.min(28, Math.round(H / 40)));
       this.cols = Math.ceil(W / this.fs);
       items = [];
       for (var i = 0; i < this.cols; i++) items.push(rand(-H, 0));
@@ -385,6 +412,7 @@
     resize();
     if (cfg.anim === "matrix") fillBase();
     window.addEventListener("resize", resize);
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(root);
     var last = performance.now();
     (function loop(now) {
       var dt = Math.min(0.1, (now - last) / 1000); last = now;

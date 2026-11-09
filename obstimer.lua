@@ -20,11 +20,18 @@ local end_ts = 0          -- Endzeitpunkt (Unix-Sekunden) wenn state == "run"
 local paused_rem = 0      -- Restzeit in Sekunden wenn state == "pause"
 local finished_handled = false
 local last_url = nil
+local last_scene = nil    -- zuletzt gesehene Programm-Szene (für Autostart)
 
 local settings_ref = nil  -- aktuelle Script-Einstellungen
 local cfg = {}
 
 local hk = {}             -- Hotkey-IDs
+
+-- Diagnose: schreibt Schritte ins OBS-Log ("[Lua: obstimer.lua] ...")
+local DEBUG = false  -- auf true setzen, um die Schritte im OBS-Log zu sehen
+local function dbg(msg)
+  if DEBUG then obs.script_log(obs.LOG_INFO, "[OBSTimer] " .. msg) end
+end
 
 ---------------------------------------------------------------------------
 -- Hilfsfunktionen
@@ -111,6 +118,8 @@ local function build_url()
   add("bg", cfg.bg_mode or "none")
   add("bgcolor", cfg.bgcolor)
   add("radius", cfg.radius or 12)
+  add("pos", cfg.pos or "mc")
+  add("margin", cfg.margin or 40)
   add("anim", cfg.anim or "gradient")
   add("c1", cfg.c1)
   add("c2", cfg.c2)
@@ -129,8 +138,8 @@ local function push_to_source(force)
   local s = obs.obs_data_create()
   obs.obs_data_set_bool(s, "is_local_file", false)
   obs.obs_data_set_string(s, "url", url)
-  obs.obs_data_set_int(s, "width", cfg.width or 800)
-  obs.obs_data_set_int(s, "height", cfg.height or 200)
+  obs.obs_data_set_int(s, "width", cfg.width or 1920)
+  obs.obs_data_set_int(s, "height", cfg.height or 1080)
   obs.obs_source_update(source, s)
   obs.obs_data_release(s)
   obs.obs_source_release(source)
@@ -200,32 +209,40 @@ local function on_finished()
   end
 end
 
+local function current_scene_name()
+  local scene = obs.obs_frontend_get_current_scene()
+  if scene == nil then return nil end
+  local name = obs.obs_source_get_name(scene)
+  obs.obs_source_release(scene)
+  return name
+end
+
+-- Läuft alle 250 ms. Wichtig: Das Script registriert bewusst KEINEN
+-- Frontend-Event-Callback. OBS hält während dieses Timers die Sperre des
+-- Scripts; ein Szenenwechsel von hier aus löst im UI-Thread ein
+-- SCENE_CHANGED-Event aus, und ein Lua-Event-Callback würde dann auf genau
+-- diese Sperre warten (Deadlock/Absturz). Szenenwechsel werden deshalb hier
+-- per Abfrage erkannt.
+local first_tick = true
 local function tick()
+  if first_tick then first_tick = false; dbg("erster Timer-Durchlauf") end
+  -- Quelle nach dem Start von OBS einmal befüllen, sobald sie existiert
+  if last_url == nil then push_to_source(true) end
+
+  local name = current_scene_name()
+  if name ~= last_scene then
+    local first = last_scene == nil
+    last_scene = name
+    if not first and cfg.auto_scene and cfg.auto_scene ~= "" and name == cfg.auto_scene and state ~= "run" then
+      if cfg.auto_reset then state = "stop" end
+      start()
+    end
+  end
+
   if state == "run" and not finished_handled and now() >= end_ts then
     finished_handled = true
     on_finished()
-  end
-end
-
----------------------------------------------------------------------------
--- Ereignisse aus OBS
----------------------------------------------------------------------------
-
-local function on_frontend_event(event)
-  if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED then
-    if cfg.auto_scene and cfg.auto_scene ~= "" and state ~= "run" then
-      local scene = obs.obs_frontend_get_current_scene()
-      if scene ~= nil then
-        local name = obs.obs_source_get_name(scene)
-        obs.obs_source_release(scene)
-        if name == cfg.auto_scene then
-          if cfg.auto_reset then state = "stop" end
-          start()
-        end
-      end
-    end
-  elseif event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING then
-    push_to_source(true)
+    last_scene = current_scene_name()
   end
 end
 
@@ -236,6 +253,8 @@ end
 local function read_settings(s)
   cfg.source      = obs.obs_data_get_string(s, "source")
   cfg.width       = obs.obs_data_get_int(s, "width")
+  cfg.pos         = obs.obs_data_get_string(s, "pos")
+  cfg.margin      = obs.obs_data_get_int(s, "margin")
   cfg.height      = obs.obs_data_get_int(s, "height")
   cfg.mode        = obs.obs_data_get_string(s, "mode")
   cfg.dur_h       = obs.obs_data_get_int(s, "dur_h")
@@ -249,7 +268,10 @@ local function read_settings(s)
   cfg.endtext     = obs.obs_data_get_string(s, "endtext")
   cfg.color       = obs_color_to_hex(obs.obs_data_get_int(s, "color"))
 
-  local font = obs.obs_data_get_obj(s, "font")
+  -- Nur eine selbst gewählte Schrift auslesen; der Standard steht unten
+  cfg.font_face, cfg.font_size, cfg.bold, cfg.italic = "Arial", 96, true, false
+  local font = nil
+  if obs.obs_data_has_user_value(s, "font") then font = obs.obs_data_get_obj(s, "font") end
   if font ~= nil then
     cfg.font_face = obs.obs_data_get_string(font, "face")
     cfg.font_size = obs.obs_data_get_int(font, "size")
@@ -259,7 +281,7 @@ local function read_settings(s)
     obs.obs_data_release(font)
   end
   if not cfg.font_face or cfg.font_face == "" then cfg.font_face = "Arial" end
-  if not cfg.font_size or cfg.font_size <= 0 then cfg.font_size = 64 end
+  if not cfg.font_size or cfg.font_size <= 0 then cfg.font_size = 96 end
 
   cfg.bg_mode     = obs.obs_data_get_string(s, "bg_mode")
   cfg.bgcolor     = obs_color_to_hex(obs.obs_data_get_int(s, "bgcolor"))
@@ -328,8 +350,8 @@ local function btn_create_source(props, prop)
   local existing = obs.obs_get_source_by_name(name)
   if existing == nil then
     local s = obs.obs_data_create()
-    obs.obs_data_set_int(s, "width", cfg.width or 800)
-    obs.obs_data_set_int(s, "height", cfg.height or 200)
+    obs.obs_data_set_int(s, "width", cfg.width or 1920)
+    obs.obs_data_set_int(s, "height", cfg.height or 1080)
     obs.obs_data_set_bool(s, "is_local_file", false)
     obs.obs_data_set_string(s, "url", "about:blank")
     local src = obs.obs_source_create("browser_source", name, s, nil)
@@ -385,6 +407,15 @@ function script_properties()
   obs.obs_properties_add_button(props, "btn_refresh", "Quellenliste aktualisieren", btn_refresh)
   obs.obs_properties_add_int(props, "width", "Breite (px)", 100, 3840, 10)
   obs.obs_properties_add_int(props, "height", "Höhe (px)", 50, 2160, 10)
+
+  local pos = obs.obs_properties_add_list(props, "pos", "Position des Countdowns",
+    obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+  for _, e in ipairs({
+    { "Oben links", "tl" }, { "Oben Mitte", "tc" }, { "Oben rechts", "tr" },
+    { "Mitte links", "ml" }, { "Mitte", "mc" }, { "Mitte rechts", "mr" },
+    { "Unten links", "bl" }, { "Unten Mitte", "bc" }, { "Unten rechts", "br" },
+  }) do obs.obs_property_list_add_string(pos, e[1], e[2]) end
+  obs.obs_properties_add_int(props, "margin", "Abstand zum Rand (px)", 0, 1000, 5)
 
   -- Zeit
   local mode = obs.obs_properties_add_list(props, "mode", "Modus",
@@ -453,8 +484,11 @@ end
 local function rgba(r, g, b, a) return a * 16777216 + b * 65536 + g * 256 + r end
 
 function script_defaults(s)
-  obs.obs_data_set_default_int(s, "width", 800)
-  obs.obs_data_set_default_int(s, "height", 200)
+  dbg("script_defaults")
+  obs.obs_data_set_default_int(s, "width", 1920)
+  obs.obs_data_set_default_int(s, "height", 1080)
+  obs.obs_data_set_default_string(s, "pos", "mc")
+  obs.obs_data_set_default_int(s, "margin", 40)
   obs.obs_data_set_default_string(s, "mode", "duration")
   obs.obs_data_set_default_int(s, "dur_h", 0)
   obs.obs_data_set_default_int(s, "dur_m", 10)
@@ -467,12 +501,17 @@ function script_defaults(s)
   obs.obs_data_set_default_string(s, "endtext", "Stream startet jetzt!")
   obs.obs_data_set_default_int(s, "color", rgba(255, 255, 255, 255))
 
-  local font = obs.obs_data_create()
-  obs.obs_data_set_string(font, "face", "Arial")
-  obs.obs_data_set_int(font, "size", 96)
-  obs.obs_data_set_int(font, "flags", 1)
-  obs.obs_data_set_default_obj(s, "font", font)
-  obs.obs_data_release(font)
+  -- Den Standard für die Schrift nur einmal setzen. Beim Neuladen des Scripts
+  -- bleibt das Einstellungs-Objekt erhalten; ein erneutes
+  -- obs_data_set_default_obj führte dann zu einem Absturz in obs_data_release.
+  if not obs.obs_data_has_default_value(s, "font") then
+    local font = obs.obs_data_create()
+    obs.obs_data_set_string(font, "face", "Arial")
+    obs.obs_data_set_int(font, "size", 96)
+    obs.obs_data_set_int(font, "flags", 1)
+    obs.obs_data_set_default_obj(s, "font", font)
+    obs.obs_data_release(font)
+  end
 
   obs.obs_data_set_default_string(s, "bg_mode", "anim")
   obs.obs_data_set_default_int(s, "bgcolor", rgba(0, 0, 0, 180))
@@ -487,6 +526,7 @@ function script_defaults(s)
 end
 
 function script_update(s)
+  dbg("script_update")
   settings_ref = s
   read_settings(s)
   push_to_source()
@@ -504,8 +544,10 @@ local HOTKEYS = {
 }
 
 function script_load(s)
+  dbg("script_load: Start")
   settings_ref = s
   read_settings(s)
+  dbg("script_load: Einstellungen gelesen")
   for _, h in ipairs(HOTKEYS) do
     local fn = h.fn
     hk[h.id] = obs.obs_hotkey_register_frontend(h.id, h.label, function(pressed)
@@ -515,12 +557,15 @@ function script_load(s)
     obs.obs_hotkey_load(hk[h.id], arr)
     obs.obs_data_array_release(arr)
   end
-  obs.obs_frontend_add_event_callback(on_frontend_event)
+  dbg("script_load: Hotkeys registriert")
+  -- Die Quelle wird nicht hier, sondern beim ersten Timer-Durchlauf befüllt
+  last_url = nil
   obs.timer_add(tick, 250)
-  push_to_source(true)
+  dbg("script_load: Ende")
 end
 
 function script_save(s)
+  dbg("script_save")
   for _, h in ipairs(HOTKEYS) do
     local arr = obs.obs_hotkey_save(hk[h.id])
     obs.obs_data_set_array(s, h.id, arr)
@@ -529,5 +574,5 @@ function script_save(s)
 end
 
 function script_unload()
-  obs.timer_remove(tick)
+  dbg("script_unload")
 end
