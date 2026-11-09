@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>OBSTimer</title>
+<!--
+  OBSTimer Overlay
+  Wird vom Script obstimer.lua als Browserquelle geladen. Alle Einstellungen
+  kommen als URL-Parameter, z. B.
+  obstimer.html?state=run&end=1767225600000&bg=anim&anim=aurora
+  Die Datei kann auch allein im Browser geöffnet werden (Vorschau).
+-->
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  #box {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #bg, #fx { position: absolute; inset: 0; }
+  #fx { width: 100%; height: 100%; display: block; }
+  #time {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .seg { display: flex; flex-direction: column; align-items: center; }
+  .num { display: block; }
+  .lbl {
+    font-size: 0.28em;
+    margin-top: 0.35em;
+    opacity: 0.8;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .sep { padding: 0 0.08em; }
+  .sep.lbl-mode { visibility: hidden; padding: 0 0.15em; }
+  .endtext { white-space: nowrap; }
+
+  /* ---------- CSS-basierte Animationen ---------- */
+  .anim-gradient #bg {
+    background: linear-gradient(120deg, var(--c1), var(--c2), var(--c3), var(--c1));
+    background-size: 300% 300%;
+    animation: gradientShift calc(12s / var(--speed)) ease-in-out infinite;
+  }
+  @keyframes gradientShift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  .anim-aurora #bg { background: var(--base); }
+  .anim-aurora #bg::before, .anim-aurora #bg::after, .anim-aurora .blob {
+    content: "";
+    position: absolute;
+    width: 70%;
+    height: 160%;
+    border-radius: 50%;
+    filter: blur(40px);
+    opacity: 0.75;
+    mix-blend-mode: screen;
+  }
+  .anim-aurora #bg::before {
+    background: var(--c1); left: -20%; top: -30%;
+    animation: auroraA calc(14s / var(--speed)) ease-in-out infinite alternate;
+  }
+  .anim-aurora #bg::after {
+    background: var(--c2); right: -20%; top: -30%;
+    animation: auroraB calc(17s / var(--speed)) ease-in-out infinite alternate;
+  }
+  .anim-aurora .blob {
+    background: var(--c3); left: 15%; top: -10%;
+    animation: auroraC calc(11s / var(--speed)) ease-in-out infinite alternate;
+  }
+  @keyframes auroraA { from { transform: translate(0, 0) rotate(0deg); } to { transform: translate(60%, 10%) rotate(40deg); } }
+  @keyframes auroraB { from { transform: translate(0, 0) rotate(0deg); } to { transform: translate(-55%, -10%) rotate(-35deg); } }
+  @keyframes auroraC { from { transform: translate(-30%, 10%) scale(0.8); } to { transform: translate(40%, -10%) scale(1.2); } }
+
+  .anim-stripes #bg {
+    background:
+      repeating-linear-gradient(45deg, var(--c1) 0 30px, var(--c2) 30px 60px);
+    background-size: 84.85px 84.85px;
+    animation: stripes calc(3s / var(--speed)) linear infinite;
+  }
+  @keyframes stripes { from { background-position: 0 0; } to { background-position: 84.85px 0; } }
+
+  .anim-neon #bg {
+    background: var(--base);
+    box-shadow: inset 0 0 0 3px var(--c1), inset 0 0 25px var(--c1);
+    animation: neon calc(2.4s / var(--speed)) ease-in-out infinite alternate;
+  }
+  @keyframes neon {
+    from { box-shadow: inset 0 0 0 3px var(--c1), inset 0 0 12px var(--c1); }
+    to   { box-shadow: inset 0 0 0 3px var(--c2), inset 0 0 45px var(--c2); }
+  }
+</style>
+</head>
+<body>
+<div id="box">
+  <div id="bg"></div>
+  <canvas id="fx" hidden></canvas>
+  <div id="time"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var q = new URLSearchParams(location.search);
+  function str(k, d) { var v = q.get(k); return v === null || v === "" ? d : v; }
+  function num(k, d) { var v = parseFloat(q.get(k)); return isFinite(v) ? v : d; }
+  function bool(k, d) { var v = q.get(k); return v === null ? d : v === "1" || v === "true"; }
+  function color(k, d) {
+    var v = str(k, d).replace(/^#/, "");
+    return /^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(v) ? "#" + v : "#" + d;
+  }
+
+  // ---------- Einstellungen ----------
+  var cfg = {
+    state:   str("state", "stop"),          // run | pause | stop
+    end:     num("end", 0),                 // Endzeitpunkt (Unix ms), bei state=run
+    rem:     num("rem", 600000),            // Restzeit (ms), bei pause/stop
+    days:    bool("days", false),
+    hours:   bool("hours", true),
+    labels:  bool("labels", false),
+    shadow:  bool("shadow", true),
+    endtext: str("endtext", "Stream startet jetzt!"),
+    color:   color("color", "ffffffff"),
+    font:    str("font", "Arial"),
+    size:    num("size", 64),
+    bold:    bool("bold", true),
+    italic:  bool("italic", false),
+    bg:      str("bg", "none"),             // none | solid | anim
+    bgcolor: color("bgcolor", "000000b3"),
+    radius:  num("radius", 12),
+    anim:    str("anim", "gradient"),
+    c1:      color("c1", "6a5cffff"),
+    c2:      color("c2", "ff4fa3ff"),
+    c3:      color("c3", "22d3eeff"),
+    base:    color("base", "0b0b1aff"),
+    speed:   Math.max(0.1, num("speed", 1)),
+    preview: bool("preview", false)
+  };
+  var LABELS = { d: "Tage", h: "Std", m: "Min", s: "Sek" };
+
+  var box = document.getElementById("box");
+  var bgEl = document.getElementById("bg");
+  var timeEl = document.getElementById("time");
+  var canvas = document.getElementById("fx");
+
+  // ---------- Text-Stil ----------
+  timeEl.style.color = cfg.color;
+  timeEl.style.fontFamily = '"' + cfg.font.replace(/"/g, "") + '", Arial, sans-serif';
+  timeEl.style.fontSize = cfg.size + "px";
+  timeEl.style.fontWeight = cfg.bold ? "700" : "400";
+  timeEl.style.fontStyle = cfg.italic ? "italic" : "normal";
+  if (cfg.shadow) timeEl.style.textShadow = "0 2px 4px rgba(0,0,0,.6), 0 0 18px rgba(0,0,0,.35)";
+
+  // ---------- Hintergrund ----------
+  box.style.borderRadius = cfg.radius + "px";
+  box.style.setProperty("--c1", cfg.c1);
+  box.style.setProperty("--c2", cfg.c2);
+  box.style.setProperty("--c3", cfg.c3);
+  box.style.setProperty("--base", cfg.base);
+  box.style.setProperty("--speed", cfg.speed);
+
+  var canvasAnims = {};
+  if (cfg.bg === "solid") {
+    bgEl.style.background = cfg.bgcolor;
+  } else if (cfg.bg === "anim") {
+    box.classList.add("anim-" + cfg.anim);
+    if (cfg.anim === "aurora") {
+      var blob = document.createElement("div");
+      blob.className = "blob";
+      bgEl.appendChild(blob);
+    }
+  }
+
+  // ---------- Countdown-Logik ----------
+  function remainingMs() {
+    if (cfg.state === "run") return Math.max(0, cfg.end - Date.now());
+    return Math.max(0, cfg.rem);
+  }
+  function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+  var lastRendered = null;
+  function render() {
+    var ms = remainingMs();
+    var html;
+    if (cfg.state === "run" && ms <= 0) {
+      html = '<span class="endtext"></span>';
+      if (lastRendered !== "__end__") {
+        timeEl.innerHTML = html;
+        timeEl.firstChild.textContent = cfg.endtext;
+        lastRendered = "__end__";
+      }
+      return;
+    }
+    // Aufrunden: 10:00 wird direkt nach dem Start noch voll angezeigt
+    var total = Math.ceil(ms / 1000);
+    var d = 0, h = 0, m, s;
+    if (cfg.days) { d = Math.floor(total / 86400); total -= d * 86400; }
+    if (cfg.hours || cfg.days) { h = Math.floor(total / 3600); total -= h * 3600; }
+    m = Math.floor(total / 60);
+    s = total - m * 60;
+
+    var parts = [];
+    if (cfg.days) parts.push(["d", String(d)]);
+    if (cfg.hours || cfg.days) parts.push(["h", pad(h)]);
+    parts.push(["m", pad(m)]);
+    parts.push(["s", pad(s)]);
+
+    var key = parts.map(function (p) { return p[1]; }).join(":");
+    if (key === lastRendered) return;
+    lastRendered = key;
+
+    html = parts.map(function (p, i) {
+      var seg = '<span class="seg"><span class="num">' + p[1] + "</span>" +
+        (cfg.labels ? '<span class="lbl">' + LABELS[p[0]] + "</span>" : "") + "</span>";
+      var sep = i < parts.length - 1
+        ? '<span class="sep' + (cfg.labels ? " lbl-mode" : "") + '">:</span>' : "";
+      return seg + sep;
+    }).join("");
+    timeEl.innerHTML = html;
+  }
+
+  // ---------- Canvas-Animationen ----------
+  var ctx, W = 0, H = 0, dpr = 1, items = [], t0 = performance.now();
+  function rgba(hex, a) {
+    var h = hex.replace("#", "");
+    var r = parseInt(h.substr(0, 2), 16), g = parseInt(h.substr(2, 2), 16), b = parseInt(h.substr(4, 2), 16);
+    return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+  }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function pick() { var c = [cfg.c1, cfg.c2, cfg.c3]; return c[Math.floor(Math.random() * 3)]; }
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = box.clientWidth; H = box.clientHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (canvasAnims[cfg.anim] && canvasAnims[cfg.anim].init) canvasAnims[cfg.anim].init();
+  }
+  function fillBase() { ctx.fillStyle = cfg.base; ctx.fillRect(0, 0, W, H); }
+
+  canvasAnims.waves = {
+    draw: function (t) {
+      fillBase();
+      var layers = [cfg.c1, cfg.c2, cfg.c3];
+      for (var l = 0; l < 3; l++) {
+        ctx.beginPath();
+        var amp = H * (0.10 + l * 0.04), y0 = H * (0.45 + l * 0.15);
+        var k = (2 + l * 0.7) * Math.PI / W, ph = t * (0.8 + l * 0.35) * cfg.speed;
+        ctx.moveTo(0, H);
+        for (var x = 0; x <= W; x += 4) ctx.lineTo(x, y0 + Math.sin(x * k + ph) * amp + Math.sin(x * k * 0.5 - ph * 0.7) * amp * 0.5);
+        ctx.lineTo(W, H); ctx.closePath();
+        ctx.fillStyle = rgba(layers[l], 0.55);
+        ctx.fill();
+      }
+    }
+  };
+
+  canvasAnims.particles = {
+    init: function () {
+      items = [];
+      var n = Math.max(20, Math.min(90, Math.round(W * H / 4500)));
+      for (var i = 0; i < n; i++) items.push({ x: rand(0, W), y: rand(0, H), vx: rand(-20, 20), vy: rand(-20, 20), r: rand(1.2, 2.8), c: pick() });
+    },
+    draw: function (t, dt) {
+      fillBase();
+      var maxD = Math.min(140, Math.max(W, H) / 4);
+      for (var i = 0; i < items.length; i++) {
+        var p = items[i];
+        p.x += p.vx * dt * cfg.speed; p.y += p.vy * dt * cfg.speed;
+        if (p.x < 0 || p.x > W) p.vx *= -1;
+        if (p.y < 0 || p.y > H) p.vy *= -1;
+        for (var j = i + 1; j < items.length; j++) {
+          var o = items[j], dx = p.x - o.x, dy = p.y - o.y, dd = Math.sqrt(dx * dx + dy * dy);
+          if (dd < maxD) {
+            ctx.strokeStyle = rgba(p.c, 0.35 * (1 - dd / maxD));
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(o.x, o.y); ctx.stroke();
+          }
+        }
+      }
+      for (i = 0; i < items.length; i++) {
+        ctx.fillStyle = items[i].c;
+        ctx.beginPath(); ctx.arc(items[i].x, items[i].y, items[i].r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  };
+
+  canvasAnims.stars = {
+    init: function () {
+      items = [];
+      for (var i = 0; i < 260; i++) items.push(this.star(true));
+    },
+    star: function (anyZ) { return { x: rand(-1, 1), y: rand(-1, 1), z: anyZ ? rand(0.05, 1) : 1, c: pick() }; },
+    draw: function (t, dt) {
+      fillBase();
+      var cx = W / 2, cy = H / 2, s = Math.max(W, H) * 0.6;
+      for (var i = 0; i < items.length; i++) {
+        var st = items[i];
+        var pz = st.z;
+        st.z -= dt * 0.35 * cfg.speed;
+        if (st.z <= 0.03) { items[i] = this.star(false); continue; }
+        var x = cx + st.x / st.z * s, y = cy + st.y / st.z * s;
+        var px = cx + st.x / pz * s, py = cy + st.y / pz * s;
+        if (x < -10 || x > W + 10 || y < -10 || y > H + 10) { items[i] = this.star(false); continue; }
+        var a = Math.min(1, (1 - st.z) * 1.4);
+        ctx.strokeStyle = rgba(st.c, a);
+        ctx.lineWidth = Math.max(0.6, (1 - st.z) * 2.6);
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
+        ctx.fillStyle = rgba(st.c, a);
+        ctx.beginPath(); ctx.arc(x, y, Math.max(0.7, (1 - st.z) * 2.2), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  };
+
+  canvasAnims.bokeh = {
+    init: function () {
+      items = [];
+      var n = Math.max(12, Math.min(40, Math.round(W * H / 9000)));
+      for (var i = 0; i < n; i++) items.push(this.dot(true));
+    },
+    dot: function (anyY) {
+      var r = rand(H * 0.08, H * 0.35);
+      return { x: rand(0, W), y: anyY ? rand(0, H) : H + r, r: r, v: rand(8, 30), a: rand(0.15, 0.45), c: pick(), w: rand(0, Math.PI * 2) };
+    },
+    draw: function (t, dt) {
+      fillBase();
+      ctx.globalCompositeOperation = "lighter";
+      for (var i = 0; i < items.length; i++) {
+        var b = items[i];
+        b.y -= b.v * dt * cfg.speed;
+        b.x += Math.sin(t * 0.5 + b.w) * 0.3 * cfg.speed;
+        if (b.y < -b.r) { items[i] = this.dot(false); continue; }
+        var g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+        g.addColorStop(0, rgba(b.c, b.a));
+        g.addColorStop(0.7, rgba(b.c, b.a * 0.5));
+        g.addColorStop(1, rgba(b.c, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalCompositeOperation = "source-over";
+    }
+  };
+
+  canvasAnims.matrix = {
+    init: function () {
+      this.fs = Math.max(10, Math.round(H / 14));
+      this.cols = Math.ceil(W / this.fs);
+      items = [];
+      for (var i = 0; i < this.cols; i++) items.push(rand(-H, 0));
+    },
+    draw: function (t, dt) {
+      ctx.fillStyle = rgba(cfg.base, 0.18);
+      ctx.fillRect(0, 0, W, H);
+      ctx.font = this.fs + "px monospace";
+      var chars = "0123456789ABCDEF:";
+      for (var i = 0; i < items.length; i++) {
+        var ch = chars[Math.floor(Math.random() * chars.length)];
+        ctx.fillStyle = i % 3 === 0 ? cfg.c2 : cfg.c1;
+        ctx.fillText(ch, i * this.fs, items[i]);
+        items[i] += this.fs * dt * 8 * cfg.speed;
+        if (items[i] > H + this.fs && Math.random() > 0.9) items[i] = rand(-H * 0.5, 0);
+      }
+    }
+  };
+
+  if (cfg.bg === "anim" && canvasAnims[cfg.anim]) {
+    canvas.hidden = false;
+    ctx = canvas.getContext("2d");
+    resize();
+    if (cfg.anim === "matrix") fillBase();
+    window.addEventListener("resize", resize);
+    var last = performance.now();
+    (function loop(now) {
+      var dt = Math.min(0.1, (now - last) / 1000); last = now;
+      canvasAnims[cfg.anim].draw((now - t0) / 1000, dt);
+      requestAnimationFrame(loop);
+    })(last);
+  }
+
+  render();
+  setInterval(render, 100);
+})();
+</script>
+</body>
+</html>
