@@ -50,7 +50,10 @@
     line-height: 1;
   }
   .seg { display: flex; flex-direction: column; align-items: center; }
-  .num { display: block; }
+  .num { display: block; white-space: nowrap; }
+  /* Jede Ziffer in einem festen Kasten: Zahl und Beschriftung wandern nicht,
+     auch bei Schriften mit unterschiedlich breiten Ziffern */
+  .dg { display: inline-block; width: var(--dw, 0.62em); text-align: center; }
   .lbl {
     font-size: 0.28em;
     margin-top: 0.35em;
@@ -184,6 +187,22 @@
   timeEl.style.fontSize = cfg.size + "px";
   timeEl.style.fontWeight = cfg.bold ? "700" : "400";
   timeEl.style.fontStyle = cfg.italic ? "italic" : "normal";
+
+  // Breiteste Ziffer der gewählten Schrift messen und als feste Ziffernbreite nutzen
+  function measureDigits() {
+    var probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap";
+    timeEl.appendChild(probe);
+    var max = 0;
+    for (var i = 0; i <= 9; i++) {
+      probe.textContent = String(i);
+      max = Math.max(max, probe.getBoundingClientRect().width);
+    }
+    timeEl.removeChild(probe);
+    if (max > 0) timeEl.style.setProperty("--dw", max + "px");
+  }
+  measureDigits();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureDigits);
   if (cfg.shadow) timeEl.style.textShadow = "0 2px 4px rgba(0,0,0,.6), 0 0 18px rgba(0,0,0,.35)";
 
   // ---------- Position ----------
@@ -254,7 +273,8 @@
     lastRendered = key;
 
     html = parts.map(function (p, i) {
-      var seg = '<span class="seg"><span class="num">' + p[1] + "</span>" +
+      var digits = p[1].split("").map(function (c) { return '<span class="dg">' + c + "</span>"; }).join("");
+      var seg = '<span class="seg"><span class="num">' + digits + "</span>" +
         (cfg.labels ? '<span class="lbl">' + LABELS[p[0]] + "</span>" : "") + "</span>";
       var sep = i < parts.length - 1
         ? '<span class="sep' + (cfg.labels ? " lbl-mode" : "") + '">:</span>' : "";
